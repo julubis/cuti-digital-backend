@@ -189,9 +189,7 @@ function sheetInsert(tableName, data) {
 
     SpreadsheetApp.flush();
 
-    if (typeof invalidateSheetCache === 'function') {
-      invalidateSheetCache(tableName);
-    }
+    invalidateSheetCache(tableName);
 
   } finally {
     lock.releaseLock();
@@ -255,9 +253,7 @@ function sheetUpdate(tableName, where, data) {
 
     SpreadsheetApp.flush();
 
-    if (typeof invalidateSheetCache === 'function') {
-      invalidateSheetCache(tableName);
-    }
+    invalidateSheetCache(tableName);
      
     return merged;
   } finally {
@@ -321,9 +317,7 @@ function sheetDelete(tableName, where) {
 
     SpreadsheetApp.flush();
 
-    if (typeof invalidateSheetCache === 'function') {
-      invalidateSheetCache(tableName);
-    }
+    invalidateSheetCache(tableName);
 
     return deletedData;
 

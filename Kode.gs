@@ -1,7 +1,8 @@
 const SPREADSHEET_ID = '10EqKavSoIU_89wtocVDjfxFw4EV8Ap7sCczAyrJluWA';
-const JWT_SECRET = PropertiesService.getScriptProperties().getProperty('JWT_SECRET');
+const JWT_SECRET = PropertiesService.getScriptProperties().getProperty('JWT_SECRET') || (() => { throw new Error('JWT_SECRET not configured'); })();
 const DEFAULT_PWD_HASH = '5a221cc1e7d52cef1239a411924e803d6b863e03a3a7af258fc8acaee0f82f21';
-const PWD_SALT = PropertiesService.getScriptProperties().getProperty('PWD_SALT');
+const PWD_SALT = PropertiesService.getScriptProperties().getProperty('PWD_SALT') || (() => { throw new Error('PWD_SALT not configured'); })();
+const FONNTE_API_KEY = PropertiesService.getScriptProperties().getProperty('FONNTE_API_KEY') || '';
 
 const SHEET_CACHE_TTL_SECONDS = 21600;
 const SHEET_CACHE_CHUNK_SIZE = 90000;
@@ -62,7 +63,8 @@ function login(username, password) {
     }
 
     const hash = hashPassword(password);
-    const user = sheetReadOne(userTable, (row) => row.nama == username && row.password == hash)
+    const usernameLower = username.toString().toLowerCase().trim();
+    const user = sheetReadOne(userTable, (row) => row.nama && row.nama.toString().toLowerCase().trim() === usernameLower && row.password == hash)
 
     if (!user) {
       return {
@@ -84,7 +86,7 @@ function login(username, password) {
       phone: user['no hp'],
       emptyNIP: user['nip/nrk'] == '',
       defaultPassword: user.password == DEFAULT_PWD_HASH,
-      // exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60) // Expire 24 jam
+      exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60) // Expire 24 jam
     });
 
     return {
@@ -133,6 +135,7 @@ function editProfile(token, data) {
       phone: newData['no hp'],
       emptyNIP: newData['nip/nrk'] == '',
       defaultPassword: newData.password == DEFAULT_PWD_HASH,
+      exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60)
     })
 
     return {
@@ -189,12 +192,28 @@ function changePassword(token, data) {
         message: 'Password baru dan konfirmasi tidak sama'
       }
     }
-    sheetUpdate(userTable, (row) => row.nama === payload.name && row.password === hashPassword(oldPassword), { 
+    const newData = sheetUpdate(userTable, (row) => row.nama === payload.name && row.password === hashPassword(oldPassword), { 
       password: hashPassword(newPassword)
+    })
+
+    const newToken = createJWT({
+      name: newData.nama,
+      role: Number(USER_ROLE[newData.role]) || 0,
+      pangkat: newData['pangkat/golongan'],
+      nip: newData['nip/nrk'],
+      position: newData.jabatan,
+      status: newData.status,
+      unit: newData['unit kerja'],
+      email: newData.email,
+      phone: newData['no hp'],
+      emptyNIP: newData['nip/nrk'] == '',
+      defaultPassword: false,
+      exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60)
     })
 
     return {
       status: true,
+      data: newToken
     };
   } catch(e) {
     if (e === 'DATA_NOT_FOUND') {
@@ -259,6 +278,7 @@ function getDashboardData(token, period='today') {
     const unitGroup = rows.reduce((acc, { ...rest }) => {
       acc[rest['unit kerja']] = acc[rest['unit kerja']] || [];
       acc[rest['unit kerja']].push({
+        id: rest.id,
         employee: rest.nama,
         leaveType: rest['jenis cuti'],
         startDate: new Date(rest['tanggal mulai cuti']).getTime() || null,
@@ -305,7 +325,7 @@ function getDashboardData(token, period='today') {
           rows[i]['status 3 (kasubag tu)'],
           rows[i]['status 4 (kepala puskesmas)']
         ], note.slice(-4)),
-        overlaps: unitGroup[unit]?.filter(leave => leave.startDate <= startDate && leave.endDate >= endDate) ?? [],
+        overlaps: unitGroup[unit]?.filter(leave => (leave.startDate <= endDate && leave.endDate >= startDate) && leave.id !== rows[i].id) ?? [],
         overlapLimit: unitLimit[unit],
       }
     }
@@ -573,6 +593,38 @@ function approveLeave(token, data) {
   const { employee, id, unit, status } = data;
 
   try {
+    // Fresh read untuk overlap check
+    const allLeaves = sheetRead(leaveTable, (row) => row.id === id || (row['unit kerja'] === unit && row.nama));
+    const targetLeave = allLeaves.find(row => row.id === id);
+    
+    if (!targetLeave) {
+      return { status: false, message: 'Data pengajuan tidak ditemukan' };
+    }
+
+    const startDate = new Date(targetLeave['tanggal mulai cuti']).getTime();
+    const endDate = new Date(targetLeave['tanggal selesai cuti']).getTime();
+    
+    const unitLimit = sheetReadOne(limitTable, (row) => row['unit kerja'] === unit);
+    const limit = unitLimit ? unitLimit.jumlah : 0;
+
+    const overlaps = allLeaves.filter(row => 
+      row.id !== id &&
+      row['unit kerja'] === unit &&
+      row['status 1 (atasan langsung)'] !== 'Ditolak' &&
+      row['status 2 (kepegawaian)'] !== 'Ditolak' &&
+      row['status 3 (kasubag tu)'] !== 'Ditolak' &&
+      row['status 4 (kepala puskesmas)'] !== 'Ditolak' &&
+      new Date(row['tanggal mulai cuti']).getTime() <= endDate &&
+      new Date(row['tanggal selesai cuti']).getTime() >= startDate
+    );
+
+    if (overlaps.length >= limit) {
+      return { 
+        status: false, 
+        message: `Limit cuti unit ${unit} sudah terpenuhi (${overlaps.length}/${limit} orang)`
+      };
+    }
+
     if (payload.role === 1 && payload.unit === unit && status === 'pending') {
       sheetUpdate(leaveTable, (row) => row.id === id && row.nama === employee && row['unit kerja'] === unit && row['status 1 (atasan langsung)'] === '', { 
         'status 1 (atasan langsung)': 'Terverifikasi'

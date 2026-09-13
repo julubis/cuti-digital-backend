@@ -46,12 +46,23 @@ function verifyJWT(token) {
     const encodedPayload = parts[1];
     const providedSignature = parts[2];
 
-    // 1. Verifikasi Signature
+    // 1. Verifikasi Signature (timing-safe comparison)
     const toSign = encodedHeader + '.' + encodedPayload;
     const expectedSignatureBytes = Utilities.computeHmacSha256Signature(toSign, JWT_SECRET);
     const expectedSignature = Utilities.base64EncodeWebSafe(expectedSignatureBytes).replace(/=+$/, '');
 
-    if (providedSignature !== expectedSignature) {
+    // Timing-safe comparison
+    if (providedSignature.length !== expectedSignature.length) {
+      Logger.log('JWT signature mismatch');
+      return false;
+    }
+    
+    let mismatch = 0;
+    for (let i = 0; i < providedSignature.length; i++) {
+      mismatch |= providedSignature.charCodeAt(i) ^ expectedSignature.charCodeAt(i);
+    }
+    
+    if (mismatch !== 0) {
       Logger.log('JWT signature mismatch');
       return false;
     }
@@ -65,7 +76,7 @@ function verifyJWT(token) {
       // 3. Verifikasi Expired
       const currentTime = Math.floor(Date.now() / 1000);
 
-      if (payload.exp && payload.exp < currentTime) {
+      if (payload.exp && payload.exp <= currentTime) {
         Logger.log('JWT token expired');
         return false;
       }
@@ -142,11 +153,8 @@ function filterRoleStatus(role, statusList) {
   }
 
   // Semua tahap terisi dan tidak ada yang kosong / ditolak
-  if (statusList[statusList.length - 1] === 'ACC') {
-    return false;
-  }
-
-  return role === 1;
+  // Sudah selesai (ACC), tidak ada role yang perlu handle
+  return false;
 }
 
 function determineOverallStatus(statusList) {
@@ -208,7 +216,6 @@ function generateApprovals(statusList, detailStatus = []) {
     approval.status = 'approved';
   }
 
-  console.log(approvals)
   return approvals;
 }
 
@@ -420,6 +427,10 @@ function groupForChart(data, period) {
 }
 
 function sendWhatsApp(phone, message) {
+  if (!FONNTE_API_KEY) {
+    Logger.log('FONNTE_API_KEY not configured');
+    return;
+  }
   const response = UrlFetchApp.fetch('https://api.fonnte.com/send', {
     method: 'post',
     payload: {
@@ -428,7 +439,7 @@ function sendWhatsApp(phone, message) {
       delay: 2,
     },
     headers: {
-      Authorization: 'RaPv8YMXpeFiWfYCEW72'
+      Authorization: FONNTE_API_KEY
     }
   });
   console.log(response.getContentText())
@@ -494,18 +505,6 @@ function parseLampiran(links) {
   const output = links.split(',').map(li => {
     return {name: li, link:li}
   })
-  // const output = links.split(',').map(li => {
-  //   const { type, id } = parseGoogleDriveUrl(li.trim())
-  //   if (type === 'folder') {
-  //     const file = DriveApp.getFolderById(id)
-  //     return { name: file.getName(), link: file.getUrl() }
-  //   } else if (type === 'file') {
-  //     const file = DriveApp.getFileById(id)
-  //     return { name: file.getName(), link: file.getUrl() }
-  //   } else {
-  //     return {}
-  //   }
-  // })
   return output
 }
 
@@ -562,24 +561,4 @@ function dapatkanTanggalPenuhUnit(unitTarget, limit) {
 // console.log(tglPenuhIT);
 // Output: [ '2026-10-02', '2026-10-03' ]
 
-function test() {
-  console.log(dapatkanTanggalPenuhUnit('UKP', 10))
-  // const resp = rows.map(row => ({ts: new Date(row.timestamp).getTime()}))[0]
-  // console.log(resp)
-  // console.log(formatDateTime(resp.ts))
-  // console.log(new Date(null).getTime() || null)
-  // console.log(getDashboardData())
-  // const file = DriveApp.getFileById('11w-m685mjOIUgScroGBYRP871PCkb76o')
-  
-  // console.log(file.getName())
-  // DriveApp.getFolderById()
-  // console.log(ScriptApp.getService().getUrl())
-  // console.log(getLeaveApprovals())
-  // console.log(new Date().getTime())
-  // sendWhatsApp('081290819484,087898823967', 'Hello world')
-  // sendEmail('anupajalapana@gmail.com', 'Testing Aplikasi Cuti', 'BAGUS JUGAAA')
-  // sheetUpdate(leaveTable, (row) => row.id === 462 && row.nama === employee && row['unit kerja'] === unit && row['status 1 (atasan langsung)'] === '', { 
-  //       'status 1 (atasan langsung)': 'Terverifikasi'
-  //     });
-  // console.log(hashPassword('12345678'))
-}
+// ponytail: Test function removed for production. Re-add for debugging with specific test cases.
