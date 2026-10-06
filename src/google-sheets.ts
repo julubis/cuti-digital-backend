@@ -1,3 +1,5 @@
+import { env } from "./runtime-env";
+
 const SHEETS_API = "https://sheets.googleapis.com/v4";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const REQUIRED_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
@@ -50,7 +52,7 @@ let cachedSheetId: number | undefined;
 let initialization: Promise<void> | undefined;
 
 function requiredEnv(name: string): string {
-	const value = process.env[name]?.trim();
+	const value = env[name]?.trim();
 	if (!value) {
 		throw new ApiError(
 			503,
@@ -65,7 +67,7 @@ function spreadsheetId(): string {
 }
 
 function sheetTitle(): string {
-	return process.env.GOOGLE_SHEET_TAB?.trim() || "Cuti";
+	return env.GOOGLE_SHEET_TAB?.trim() || "Cuti";
 }
 
 function base64Url(bytes: Uint8Array): string {

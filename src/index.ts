@@ -1,3 +1,4 @@
+import { env } from "./runtime-env";
 import { Elysia, t } from "elysia";
 import {
 	ApiError,
@@ -25,7 +26,7 @@ const cutiSchema = t.Object({
 	status: t.Optional(statusSchema)
 });
 
-const port = Number(process.env.PORT ?? 3000);
+const port = Number(env.PORT ?? 3000);
 if (!Number.isInteger(port) || port < 1 || port > 65_535) {
 	throw new Error("PORT harus berupa angka antara 1 dan 65535.");
 }
