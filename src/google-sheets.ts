@@ -88,6 +88,12 @@ function decodePrivateKey(pem: string): Uint8Array {
 	return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+	const buffer = new ArrayBuffer(bytes.byteLength);
+	new Uint8Array(buffer).set(bytes);
+	return buffer;
+}
+
 async function getAccessToken(): Promise<string> {
 	if (cachedAccessToken && cachedAccessToken.expiresAt > Date.now()) {
 		return cachedAccessToken.value;
@@ -105,7 +111,7 @@ async function getAccessToken(): Promise<string> {
 	})}`;
 	const key = await crypto.subtle.importKey(
 		"pkcs8",
-		decodePrivateKey(privateKey),
+		toArrayBuffer(decodePrivateKey(privateKey)),
 		{ name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
 		false,
 		["sign"]
