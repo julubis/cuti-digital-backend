@@ -1,26 +1,4 @@
-const SPREADSHEET_ID = '10EqKavSoIU_89wtocVDjfxFw4EV8Ap7sCczAyrJluWA';
-const JWT_SECRET = PropertiesService.getScriptProperties().getProperty('JWT_SECRET') || (() => { throw new Error('JWT_SECRET not configured'); })();
-const DEFAULT_PWD_HASH = '5a221cc1e7d52cef1239a411924e803d6b863e03a3a7af258fc8acaee0f82f21';
-const PWD_SALT = PropertiesService.getScriptProperties().getProperty('PWD_SALT') || (() => { throw new Error('PWD_SALT not configured'); })();
-const FONNTE_API_KEY = PropertiesService.getScriptProperties().getProperty('FONNTE_API_KEY') || '';
-
-const SHEET_CACHE_TTL_SECONDS = 21600;
-const SHEET_CACHE_CHUNK_SIZE = 90000;
-const LOCK_TIMEOUT_MS = 30000;
-
-// const sheetApp = SpreadsheetApp.openById(SPREADSHEET_ID);
 const sheetApp = SpreadsheetApp.getActiveSpreadsheet();
-const userTable = 'Sheet1';
-const leaveTable = 'Pengajuan';
-const limitTable = 'Limit Cuti Unit Kerja';
-
-const USER_ROLE = {
-  "Pegawai": 0,
-  "Atasan Langsung": 1,
-  "Tim Kepegawaian": 2,
-  "Kasubag TU": 3,
-  "Kepala Puskesmas": 4
-}
 
 // Logic Application
 // delete cache when edit spreadsheet
@@ -55,318 +33,141 @@ function doGet(e) {
 function login(username, password) {
   try {
     if (!username || !password) {
-      return {
-        status: false,
-        data: null,
-        message: 'Username dan password harus diisi'
-      };
+      return Response.validation('Username dan password harus diisi');
     }
 
-    const hash = hashPassword(password);
-    const usernameLower = username.toString().toLowerCase().trim();
-    const user = sheetReadOne(userTable, (row) => row.nama && row.nama.toString().toLowerCase().trim() === usernameLower && row.password == hash)
-
+    const user = UserModel.findByCredentials(username, password);
     if (!user) {
-      return {
-        status: false,
-        data: null,
-        message: 'Nama atau password tidak valid'
-      };
+      return Response.error('Nama atau password tidak valid');
     }
 
-    const jwt = createJWT({
-      name: user.nama,
-      role: Number(USER_ROLE[user.role]) || 0,
-      pangkat: user['pangkat/golongan'],
-      nip: user['nip/nrk'],
-      position: user.jabatan,
-      status: user.status,
-      unit: user['unit kerja'],
-      email: user.email,
-      phone: user['no hp'],
-      emptyNIP: user['nip/nrk'] == '',
-      defaultPassword: user.password == DEFAULT_PWD_HASH,
-      exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60) // Expire 24 jam
-    });
-
-    return {
-      status: true,
-      data: jwt,
-      message: 'Login berhasil'
-    };
+    const jwt = UserModel.createToken(user);
+    return Response.success(jwt, 'Login berhasil');
 
   } catch (error) {
     Logger.log('Error in login: ' + error.toString());
-    return {
-      status: false,
-      data: null,
-      message: 'Terjadi kesalahan saat login: ' + error.toString()
-    };
+    return Response.error('Terjadi kesalahan saat login: ' + error.toString());
   }
 }
 
 function editProfile(token, data) {
   const payload = verifyJWT(token);
-  if (!payload) {
-    return {
-      status: false,
-      message: 'Token tidak valid atau sudah kadaluarsa'
-    };
-  }
+  if (!payload) return Response.unauthorized();
 
   const { nip, position, pangkat, email, phone } = data;
   try {
-    const newData = sheetUpdate(userTable, (row) => row.nama === payload.name, { 
-      'nip/nrk': nip, 
-      jabatan: position, 
-      'pangkat/golongan': pangkat,
-      email,
-      'no hp': phone
-    })
-    const token = createJWT({
-      name: newData.nama,
-      role: Number(USER_ROLE[newData.role]) || 0,
-      pangkat: newData['pangkat/golongan'],
-      nip: newData['nip/nrk'],
-      position: newData.jabatan,
-      status: newData.status,
-      unit: newData['unit kerja'],
-      email: newData.email,
-      phone: newData['no hp'],
-      emptyNIP: newData['nip/nrk'] == '',
-      defaultPassword: newData.password == DEFAULT_PWD_HASH,
-      exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60)
-    })
+    const newData = sheetUpdate(TABLES.USERS, (row) => row[COLUMNS.USER.NAMA] === payload.name, { 
+      [COLUMNS.USER.NIP]: nip, 
+      [COLUMNS.USER.JABATAN]: position, 
+      [COLUMNS.USER.PANGKAT]: pangkat,
+      [COLUMNS.USER.EMAIL]: email,
+      [COLUMNS.USER.NO_HP]: phone
+    });
+    
+    const newToken = UserModel.createToken(newData);
+    return Response.success(newToken);
 
-    return {
-      status: true,
-      data: token
-    };
   } catch(e) {
-    return {
-      status: false,
-      message: e
-    };
+    return Response.error(e);
   }
 }
 
 function changePassword(token, data) {
   const payload = verifyJWT(token);
-  if (!payload) {
-    return {
-      status: false,
-      message: 'Token tidak valid atau sudah kadaluarsa'
-    };
-  }
+  if (!payload) return Response.unauthorized();
 
   const { oldPassword, newPassword, confirmPassword } = data;
+  
   try {
     if (!newPassword || !confirmPassword || !oldPassword) {
-      return {
-        status: false,
-        data: null,
-        message: 'Semua field harus diisi'
-      }
+      return Response.validation('Semua field harus diisi');
     }
 
     if (newPassword.length < 8) {
-      return {
-        status: false,
-        data: null,
-        message: 'Password baru minimal 8 karakter'
-      }
+      return Response.validation('Password baru minimal 8 karakter');
     }
 
-    if (newPassword === '12345678') {
-      return {
-        status: false,
-        data: null,
-        message: 'Password baru tidak boleh "12345678"'
-      }
+    if (newPassword === CONFIG.DEFAULT_PASSWORD) {
+      return Response.validation('Password baru tidak boleh "12345678"');
     }
 
     if (confirmPassword !== newPassword) {
-      return {
-        status: false,
-        data: null,
-        message: 'Password baru dan konfirmasi tidak sama'
-      }
+      return Response.validation('Password baru dan konfirmasi tidak sama');
     }
-    const newData = sheetUpdate(userTable, (row) => row.nama === payload.name && row.password === hashPassword(oldPassword), { 
-      password: hashPassword(newPassword)
-    })
 
-    const newToken = createJWT({
-      name: newData.nama,
-      role: Number(USER_ROLE[newData.role]) || 0,
-      pangkat: newData['pangkat/golongan'],
-      nip: newData['nip/nrk'],
-      position: newData.jabatan,
-      status: newData.status,
-      unit: newData['unit kerja'],
-      email: newData.email,
-      phone: newData['no hp'],
-      emptyNIP: newData['nip/nrk'] == '',
-      defaultPassword: false,
-      exp: Math.floor(Date.now() / 1000) + (24 * 60 * 60)
-    })
+    const newData = sheetUpdate(TABLES.USERS, 
+      (row) => row[COLUMNS.USER.NAMA] === payload.name && row[COLUMNS.USER.PASSWORD] === hashPassword(oldPassword), 
+      { [COLUMNS.USER.PASSWORD]: hashPassword(newPassword) }
+    );
 
-    return {
-      status: true,
-      data: newToken
-    };
+    const newToken = UserModel.createToken(newData);
+    return Response.success(newToken);
+
   } catch(e) {
     if (e === 'DATA_NOT_FOUND') {
-      return {
-        status: false,
-        message: 'Password lama Anda salah.'
-      };
+      return Response.error('Password lama Anda salah.');
     }
-    return {
-      status: false,
-      message: JSON.stringify(e)
-    };
+    return Response.error(JSON.stringify(e));
   }
 }
 
 function getUsers() {
   try {
-    const users = sheetRead(userTable);
-
+    const users = sheetRead(TABLES.USERS);
     const employees = users
-      .filter(row => row.nama)
-      .map(row => ({
-        id: row.id,
-        name: row.nama,
-        unit: row['unit kerja']
-      }));
+      .filter(row => row[COLUMNS.USER.NAMA])
+      .map(row => UserModel.toSimpleDTO(row));
 
-    return {
-      status: true,
-      data: employees,
-      message: null
-    };
+    return Response.success(employees);
 
   } catch (error) {
     Logger.log('Error in getUsers: ' + error.toString());
-    return {
-      status: false,
-      data: null,
-      message: 'Gagal mengambil data pegawai: ' + error.toString()
-    };
+    return Response.error('Gagal mengambil data pegawai: ' + error.toString());
   }
 }
 
 function getDashboardData(token, period='today') {
   try {
-    // Validasi token
     const payload = verifyJWT(token);
-    if (!payload) {
-      return {
-        status: false,
-        data: null,
-        message: 'Token tidak valid atau sudah kadaluarsa'
-      };
-    }
-    // const payload = {role: 0, unit: 'Admen'}
+    if (!payload) return Response.unauthorized();
 
-    const rows = sheetRead(leaveTable, (row) => row.nama && (payload.role > 1 ? true : row['unit kerja'] === payload.unit))
-    const notes = getSheetNoteCached_(leaveTable);
-    const unitLimit = Object.fromEntries(
-      sheetRead(limitTable).map(item => [item['unit kerja'], item.jumlah])
-    ); 
-    const unitGroup = rows.reduce((acc, { ...rest }) => {
-      acc[rest['unit kerja']] = acc[rest['unit kerja']] || [];
-      acc[rest['unit kerja']].push({
-        id: rest.id,
-        employee: rest.nama,
-        leaveType: rest['jenis cuti'],
-        startDate: new Date(rest['tanggal mulai cuti']).getTime() || null,
-        endDate: new Date(rest['tanggal selesai cuti']).getTime() || null,
-        duration: rest['jumlah hari'],
-        status: determineOverallStatus([
-          rest['status 1 (atasan langsung)'],
-          rest['status 2 (kepegawaian)'],
-          rest['status 3 (kasubag tu)'],
-          rest['status 4 (kepala puskesmas)']
-        ])
-      });
-      return acc;
-    }, {})
+    const allRows = sheetRead(TABLES.LEAVES, (row) => row[COLUMNS.LEAVE.NAMA]);
+    const filteredRows = LeaveService.filterByRole(allRows, payload);
+    
+    const notes = getSheetNoteCached_(TABLES.LEAVES);
+    const unitLimit = LeaveService.getUnitLimits();
+    const unitGroup = LeaveService.buildUnitGroup(filteredRows);
+    const stats = groupForChart(filteredRows, period);
 
-    const stats = groupForChart(rows, period)
-    const lenRows = rows.length
-    const leaveList = new Array(lenRows);
-    for (let i = 0; i < lenRows; i++) {
-      const status = determineOverallStatus([
-        rows[i]['status 1 (atasan langsung)'],
-        rows[i]['status 2 (kepegawaian)'],
-        rows[i]['status 3 (kasubag tu)'],
-        rows[i]['status 4 (kepala puskesmas)']
-      ]);
-      const note = notes[rows[i].id - 1]
-      const startDate = new Date(rows[i]['tanggal mulai cuti']).getTime() || null
-      const endDate = new Date(rows[i]['tanggal selesai cuti']).getTime() || null
-      const unit = rows[i]['unit kerja']
-      leaveList[lenRows - (i+1)] = {
-        id: rows[i].id,
-        employee: rows[i].nama,
-        nip: rows[i]['nip/nrk'],
-        leaveType: rows[i]['jenis cuti'],
-        startDate,
-        endDate,
-        duration: rows[i]['jumlah hari'],
-        unit,
-        status,
-        reason: rows[i]['alasan cuti'],
-        approvals: generateApprovals([
-          rows[i]['status 1 (atasan langsung)'],
-          rows[i]['status 2 (kepegawaian)'],
-          rows[i]['status 3 (kasubag tu)'],
-          rows[i]['status 4 (kepala puskesmas)']
-        ], note.slice(-4)),
-        overlaps: unitGroup[unit]?.filter(leave => (leave.startDate <= endDate && leave.endDate >= startDate) && leave.id !== rows[i].id) ?? [],
-        overlapLimit: unitLimit[unit],
-      }
-    }
+    const leaveList = filteredRows
+      .map(row => LeaveModel.toDTO(row, notes, unitGroup, unitLimit))
+      .reverse();
 
-    return {
-      status: true,
-      data: {
-        ...stats,
-        pendingApprovals: leaveList.filter(row => {
-          if (payload.role <= 1 && row.unit !== payload.unit) return false;
-          if (payload.role === 1 && row.status === 'pending') return true; 
-          if (payload.role === 2 && row.status === 'pending-1') return true; 
-          if (payload.role === 3 && row.status === 'pending-2') return true; 
-          if (payload.role === 4 && row.status === 'pending-3') return true; 
-          return false
-        }).slice(0, 4), // Limit 5
-        recentRequests: leaveList.splice(0, 15)
-      },
-      message: null
-    };
+    const pendingApprovals = leaveList.filter(row => {
+      if (payload.role <= USER_ROLE.ATASAN_LANGSUNG && row.unit !== payload.unit) return false;
+      if (payload.role === USER_ROLE.ATASAN_LANGSUNG && row.status === 'pending') return true;
+      if (payload.role === USER_ROLE.TIM_KEPEGAWAIAN && row.status === 'pending-1') return true;
+      if (payload.role === USER_ROLE.KASUBAG_TU && row.status === 'pending-2') return true;
+      if (payload.role === USER_ROLE.KEPALA_PUSKESMAS && row.status === 'pending-3') return true;
+      return false;
+    }).slice(0, 4);
+
+    return Response.success({
+      ...stats,
+      pendingApprovals,
+      recentRequests: leaveList.slice(0, 15)
+    });
 
   } catch (error) {
-    Logger.log('Error in getDashboardStats: ' + error.toString());
-    return {
-      status: false,
-      data: null,
-      message: 'Gagal mengambil statistik dashboard: ' + error.toString()
-    };
+    Logger.log('Error in getDashboardData: ' + error.toString());
+    return Response.error('Gagal mengambil statistik dashboard: ' + error.toString());
   }
 }
 
 function getLeaves(token, filter={}) {
   try {
     const payload = verifyJWT(token);
-    if (!payload) {
-      return {
-        status: false,
-        data: null,
-        message: 'Token tidak valid atau sudah kadaluarsa'
-      };
-    }
+    if (!payload) return Response.unauthorized();
 
     const search = (filter?.search || '').toString().trim().toLowerCase();
     const leaveTypeFilter = (filter?.leaveType || '').toString().trim();
@@ -374,354 +175,172 @@ function getLeaves(token, filter={}) {
     const yearFilter = (filter?.year || '').toString().trim();
     const statusFilter = (filter?.status || '').toString().trim();
 
-    const rows = sheetRead('Pengajuan', (row) => {
-      if (!row.nama) return false;
+    const rows = sheetRead(TABLES.LEAVES, (row) => {
+      if (!row[COLUMNS.LEAVE.NAMA]) return false;
 
-      // Role 0 & 1 dibatasi unit sendiri; role 2, 3, 4 melihat semua unit
-      if (payload.role <= 1 && row['unit kerja'] !== payload.unit) return false;
-
-      // Filter unit kerja tambahan dari user (khusus role yang bisa lihat semua unit)
-      if (unitFilter && row['unit kerja'] !== unitFilter) return false;
-
-      if (search && !row.nama.toString().toLowerCase().includes(search)) return false;
-
-      if (leaveTypeFilter && row['jenis cuti'] !== leaveTypeFilter) return false;
+      // Role filter
+      if (payload.role <= USER_ROLE.ATASAN_LANGSUNG && row[COLUMNS.LEAVE.UNIT] !== payload.unit) return false;
+      if (unitFilter && row[COLUMNS.LEAVE.UNIT] !== unitFilter) return false;
+      if (search && !row[COLUMNS.LEAVE.NAMA].toString().toLowerCase().includes(search)) return false;
+      if (leaveTypeFilter && row[COLUMNS.LEAVE.JENIS_CUTI] !== leaveTypeFilter) return false;
 
       if (yearFilter) {
-        const ts = row.timestamp ? new Date(row.timestamp) : null;
+        const ts = row[COLUMNS.LEAVE.TIMESTAMP] ? new Date(row[COLUMNS.LEAVE.TIMESTAMP]) : null;
         if (!ts || String(ts.getFullYear()) !== yearFilter) return false;
       }
 
       return true;
     });
-    const notes = getSheetNoteCached_(leaveTable);
-    const unitLimit = Object.fromEntries(
-      sheetRead(limitTable).map(item => [item['unit kerja'], item.jumlah])
-    ); 
-    const unitGroup = rows.reduce((acc, { ...rest }) => {
-      acc[rest['unit kerja']] = acc[rest['unit kerja']] || [];
-      acc[rest['unit kerja']].push({
-        employee: rest.nama,
-        leaveType: rest['jenis cuti'],
-        startDate: new Date(rest['tanggal mulai cuti']).getTime() || null,
-        endDate: new Date(rest['tanggal selesai cuti']).getTime() || null,
-        duration: rest['jumlah hari'],
-        status: determineOverallStatus([
-          rest['status 1 (atasan langsung)'],
-          rest['status 2 (kepegawaian)'],
-          rest['status 3 (kasubag tu)'],
-          rest['status 4 (kepala puskesmas)']
-        ])
-      });
-      return acc;
-    }, {})
 
-    const lenRows = rows.length;
-    const leaveList = [];
-    for (let i = 0; i < lenRows; i++) {
-      const statusList = [
-        rows[i]['status 1 (atasan langsung)'],
-        rows[i]['status 2 (kepegawaian)'],
-        rows[i]['status 3 (kasubag tu)'],
-        rows[i]['status 4 (kepala puskesmas)']
-      ];
-      const status = determineOverallStatus(statusList);
+    const notes = getSheetNoteCached_(TABLES.LEAVES);
+    const unitLimit = LeaveService.getUnitLimits();
+    const unitGroup = LeaveService.buildUnitGroup(rows);
 
-      // Filter status akhir (pending/pending-1/.../approved/rejected) dari sisi user
-      if (statusFilter && status !== statusFilter) continue;
-      const note = notes[rows[i].id - 1]
+    const leaveList = rows
+      .map(row => {
+        const dto = LeaveModel.toDTO(row, notes, unitGroup, unitLimit);
+        // Filter by final status
+        if (statusFilter && dto.status !== statusFilter) return null;
+        return dto;
+      })
+      .filter(item => item !== null)
+      .reverse();
 
-      leaveList.push({
-        id: rows[i].id,
-        submittedDate: new Date(rows[i].timestamp).getTime() || null,
-        employee: rows[i].nama,
-        nip: rows[i]['nip/nrk'],
-        leaveType: rows[i]['jenis cuti'],
-        startDate: new Date(rows[i]['tanggal mulai cuti']).getTime() || null,
-        endDate: new Date(rows[i]['tanggal selesai cuti']).getTime() || null,
-        duration: rows[i]['jumlah hari'],
-        unit: rows[i]['unit kerja'],
-        status,
-        attachment: parseLampiran(rows[i].lampiran),
-        reason: rows[i]['alasan cuti'],
-        approvals: generateApprovals(statusList, note.slice(-4))
-      });
-    }
-
-    // Data terbaru di paling atas
-    leaveList.reverse();
-
-    return {
-      status: true,
-      data: leaveList
-    };
+    return Response.success(leaveList);
 
   } catch (e) {
-    console.log(e)
+    Logger.log('Error in getLeaves: ' + e.toString());
+    return Response.error('Gagal mengambil data cuti: ' + e.toString());
   }
 }
 
 function getLeaveApprovals(token, filter={}) {
   try {
     const payload = verifyJWT(token);
-    if (!payload) {
-      return {
-        status: false,
-        data: null,
-        message: 'Token tidak valid atau sudah kadaluarsa'
-      };
-    }
-
-    if (payload.role === 0) {
-      return {
-        status: false,
-        data: null,
-        message: 'Tidak ditemukan'
-      };
-    }
+    if (!payload) return Response.unauthorized();
+    if (payload.role === USER_ROLE.PEGAWAI) return Response.notFound('Tidak ditemukan');
 
     const search = (filter?.search || '').toString().trim().toLowerCase();
     const leaveTypeFilter = (filter?.leaveType || '').toString().trim();
     const unitFilter = (filter?.unit || '').toString().trim();
     const yearFilter = (filter?.year || '').toString().trim();
 
-    const rows = sheetRead(leaveTable, (row) => {
-      if (!row.nama) return false;
+    const rows = sheetRead(TABLES.LEAVES, (row) => {
+      if (!row[COLUMNS.LEAVE.NAMA]) return false;
 
-      // Role 0 & 1 dibatasi unit sendiri; role 2, 3, 4 melihat semua unit
-      if (payload.role <= 1 && row['unit kerja'] !== payload.unit) return false;
-
-      // Filter unit kerja tambahan dari user (khusus role yang bisa lihat semua unit)
-      if (unitFilter && row['unit kerja'] !== unitFilter) return false;
-
-      if (search && !row.nama.toString().toLowerCase().includes(search)) return false;
-
-      if (leaveTypeFilter && row['jenis cuti'] !== leaveTypeFilter) return false;
+      // Role filter
+      if (payload.role <= USER_ROLE.ATASAN_LANGSUNG && row[COLUMNS.LEAVE.UNIT] !== payload.unit) return false;
+      if (unitFilter && row[COLUMNS.LEAVE.UNIT] !== unitFilter) return false;
+      if (search && !row[COLUMNS.LEAVE.NAMA].toString().toLowerCase().includes(search)) return false;
+      if (leaveTypeFilter && row[COLUMNS.LEAVE.JENIS_CUTI] !== leaveTypeFilter) return false;
 
       if (yearFilter) {
-        const ts = row.timestamp ? new Date(row.timestamp) : null;
+        const ts = row[COLUMNS.LEAVE.TIMESTAMP] ? new Date(row[COLUMNS.LEAVE.TIMESTAMP]) : null;
         if (!ts || String(ts.getFullYear()) !== yearFilter) return false;
       }
 
-      // Hanya tampilkan pengajuan yang memang berada di tahap approval milik role ini
-      const isCurrentStage = filterRoleStatus(payload.role, [
-        row['status 1 (atasan langsung)'],
-        row['status 2 (kepegawaian)'],
-        row['status 3 (kasubag tu)'],
-        row['status 4 (kepala puskesmas)']
-      ]);
-
-      return isCurrentStage;
+      // Filter by approval stage
+      return LeaveService.isAtApprovalStage(LeaveModel.getStatusList(row), payload.role);
     });
-    const notes = getSheetNoteCached_(leaveTable);
-    const unitLimit = Object.fromEntries(
-      sheetRead(limitTable).map(item => [item['unit kerja'], item.jumlah])
-    ); 
-    const unitGroup = rows.reduce((acc, { ...rest }) => {
-      acc[rest['unit kerja']] = acc[rest['unit kerja']] || [];
-      acc[rest['unit kerja']].push({
-        id: rest.id,
-        employee: rest.nama,
-        leaveType: rest['jenis cuti'],
-        startDate: new Date(rest['tanggal mulai cuti']).getTime() || null,
-        endDate: new Date(rest['tanggal selesai cuti']).getTime() || null,
-        duration: rest['jumlah hari'],
-        status: determineOverallStatus([
-          rest['status 1 (atasan langsung)'],
-          rest['status 2 (kepegawaian)'],
-          rest['status 3 (kasubag tu)'],
-          rest['status 4 (kepala puskesmas)']
-        ])
-      });
-      return acc;
-    }, {})
 
-    const lenRows = rows.length;
-    const leaveList = new Array(lenRows);
-    for (let i = 0; i < lenRows; i++) {
-      const statusList = [
-        rows[i]['status 1 (atasan langsung)'],
-        rows[i]['status 2 (kepegawaian)'],
-        rows[i]['status 3 (kasubag tu)'],
-        rows[i]['status 4 (kepala puskesmas)']
-      ];
-      const status = determineOverallStatus(statusList);
-      const note = notes[rows[i].id - 1]
-      const startDate = new Date(rows[i]['tanggal mulai cuti']).getTime() || null
-      const endDate = new Date(rows[i]['tanggal selesai cuti']).getTime() || null
-      const unit = rows[i]['unit kerja']
+    const notes = getSheetNoteCached_(TABLES.LEAVES);
+    const unitLimit = LeaveService.getUnitLimits();
+    const unitGroup = LeaveService.buildUnitGroup(rows);
 
-      leaveList[lenRows - (i+1)] = {
-        id: rows[i].id,
-        submittedDate: new Date(rows[i].timestamp).getTime() || null,
-        employee: rows[i].nama,
-        nip: rows[i]['nip/nrk'],
-        leaveType: rows[i]['jenis cuti'],
-        startDate,
-        endDate,
-        duration: rows[i]['jumlah hari'],
-        unit,
-        status,
-        attachment: parseLampiran(rows[i].lampiran),
-        reason: rows[i]['alasan cuti'],
-        approvals: generateApprovals(statusList, note.slice(-4)),
-        overlaps: unitGroup[unit]?.filter(leave => leave.startDate <= startDate && leave.endDate >= endDate && leave.id !== rows[i].id) ?? [],
-        overlapLimit: unitLimit[unit] ?? 0,
-      }
-    }
+    const leaveList = rows
+      .map(row => LeaveModel.toDTO(row, notes, unitGroup, unitLimit))
+      .reverse();
 
-    return {
-      status: true,
-      data: leaveList
-    };
+    return Response.success(leaveList);
 
   } catch (e) {
-    console.log(e)
+    Logger.log('Error in getLeaveApprovals: ' + e.toString());
+    return Response.error('Gagal mengambil data approval: ' + e.toString());
   }
 }
 
 function approveLeave(token, data) {
   const payload = verifyJWT(token);
-  if (!payload) {
-    return {
-      status: false,
-      data: null,
-      message: 'Token tidak valid atau sudah kadaluarsa'
-    };
-  }
+  if (!payload) return Response.unauthorized();
 
   const { employee, id, unit, status } = data;
 
   try {
-    // Fresh read untuk overlap check
-    const allLeaves = sheetRead(leaveTable, (row) => row.id === id || (row['unit kerja'] === unit && row.nama));
-    const targetLeave = allLeaves.find(row => row.id === id);
-    
-    if (!targetLeave) {
-      return { status: false, message: 'Data pengajuan tidak ditemukan' };
+    // Get fresh data to prevent race condition
+    const freshData = LeaveService.getFreshLeaveForApproval(id, unit);
+    if (!freshData) return Response.notFound('Data pengajuan tidak ditemukan');
+
+    const { targetLeave, allLeaves } = freshData;
+
+    // Validate overlap limit
+    const validation = LeaveService.validateOverlapLimit(targetLeave, allLeaves);
+    if (!validation.valid) return Response.error(validation.message);
+
+    // Get approval stage config
+    const stage = LeaveService.getApprovalStage(payload.role, status);
+    if (!stage) return Response.error('Data tidak valid');
+
+    // Unit validation for role 1
+    if (stage.requireUnit && payload.unit !== unit) {
+      return Response.error('Anda tidak memiliki akses untuk unit ini');
     }
 
-    const startDate = new Date(targetLeave['tanggal mulai cuti']).getTime();
-    const endDate = new Date(targetLeave['tanggal selesai cuti']).getTime();
-    
-    const unitLimit = sheetReadOne(limitTable, (row) => row['unit kerja'] === unit);
-    const limit = unitLimit ? unitLimit.jumlah : 0;
-
-    const overlaps = allLeaves.filter(row => 
-      row.id !== id &&
-      row['unit kerja'] === unit &&
-      row['status 1 (atasan langsung)'] !== 'Ditolak' &&
-      row['status 2 (kepegawaian)'] !== 'Ditolak' &&
-      row['status 3 (kasubag tu)'] !== 'Ditolak' &&
-      row['status 4 (kepala puskesmas)'] !== 'Ditolak' &&
-      new Date(row['tanggal mulai cuti']).getTime() <= endDate &&
-      new Date(row['tanggal selesai cuti']).getTime() >= startDate
+    // Update status
+    sheetUpdate(TABLES.LEAVES, 
+      (row) => row.id === id && 
+               row[COLUMNS.LEAVE.NAMA] === employee && 
+               row[COLUMNS.LEAVE.UNIT] === unit && 
+               row[stage.column] === STATUS.EMPTY,
+      { [stage.column]: stage.value }
     );
 
-    if (overlaps.length >= limit) {
-      return { 
-        status: false, 
-        message: `Limit cuti unit ${unit} sudah terpenuhi (${overlaps.length}/${limit} orang)`
-      };
-    }
+    // Add approval note
+    sheetAddNote(TABLES.LEAVES, `${stage.noteCol}${id}`, `|${payload.name}|${Date.now()}`);
 
-    if (payload.role === 1 && payload.unit === unit && status === 'pending') {
-      sheetUpdate(leaveTable, (row) => row.id === id && row.nama === employee && row['unit kerja'] === unit && row['status 1 (atasan langsung)'] === '', { 
-        'status 1 (atasan langsung)': 'Terverifikasi'
-      });
-      sheetAddNote(leaveTable, `P${id}`, `|${payload.name}|${Date.now()}`)
-      return { status: true};
-    }
+    return Response.success(null, 'Berhasil approve');
 
-    if (payload.role === 2 && status === 'pending-1') {
-      sheetUpdate(leaveTable, (row) => row.id === id && row.nama === employee && row['unit kerja'] === unit && row['status 2 (kepegawaian)'] === '', { 
-        'status 2 (kepegawaian)': 'Terverifikasi'
-      });
-      sheetAddNote(leaveTable, `Q${id}`, `|${payload.name}|${Date.now()}`)
-      return { status: true};
-    }
-
-    if (payload.role === 3 && status === 'pending-2') {
-      sheetUpdate(leaveTable, (row) => row.id === id && row.nama === employee && row['unit kerja'] === unit && row['status 3 (kasubag tu)'] === '', { 
-        'status 3 (kasubag tu)': 'Terverifikasi'
-      });
-      sheetAddNote(leaveTable, `R${id}`, `|${payload.name}|${Date.now()}`)
-      return { status: true};
-    }
-
-    if (payload.role === 4 && status === 'pending-3') {
-      sheetUpdate(leaveTable, (row) => row.id === id && row.nama === employee && row['unit kerja'] === unit && row['status 4 (kepala puskesmas)'] === '', { 
-        'status 4 (kepala puskesmas)': 'ACC'
-      });
-      sheetAddNote(leaveTable, `S${id}`, `|${payload.name}|${Date.now()}`)
-      return { status: true};
-    }
-
-    return { status: false, message: 'Data tidak valid'};
-    
   } catch (e) {
     Logger.log('Error in approveLeave: ' + e.toString());
-    return {
-      status: false,
-      data: null,
-      message: e.toString()
-    };
+    return Response.error(e.toString());
   }
 }
 
 function rejectLeave(token, data, reason) {
   const payload = verifyJWT(token);
-  if (!payload) {
-    return {
-      status: false,
-      data: null,
-      message: 'Token tidak valid atau sudah kadaluarsa'
-    };
-  }
+  if (!payload) return Response.unauthorized();
 
   const { employee, id, unit, status } = data;
 
   try {
-    if (payload.role === 1 && payload.unit === unit && status === 'pending') {
-      sheetUpdate(leaveTable, (row) => row.id === id && row.nama === employee && row['unit kerja'] === unit && row['status 1 (atasan langsung)'] === '', { 
-        'status 1 (atasan langsung)': 'Ditolak'
-      });
-      sheetAddNote(leaveTable, `P${id}`, `${reason}|${payload.name}|${Date.now()}`)
-      return { status: true};
+    if (!reason || reason.trim() === '') {
+      return Response.validation('Alasan penolakan harus diisi');
     }
 
-    if (payload.role === 2 && status === 'pending-1') {
-      sheetUpdate(leaveTable, (row) => row.id === id && row.nama === employee && row['unit kerja'] === unit && row['status 2 (kepegawaian)'] === '', { 
-        'status 2 (kepegawaian)': 'Ditolak'
-      });
-      sheetAddNote(leaveTable, `Q${id}`, `${reason}|${payload.name}|${Date.now()}`)
-      return { status: true};
+    // Get approval stage config
+    const stage = LeaveService.getApprovalStage(payload.role, status);
+    if (!stage) return Response.error('Data tidak valid');
+
+    // Unit validation for role 1
+    if (stage.requireUnit && payload.unit !== unit) {
+      return Response.error('Anda tidak memiliki akses untuk unit ini');
     }
 
-    if (payload.role === 3 && status === 'pending-2') {
-      sheetUpdate(leaveTable, (row) => row.id === id && row.nama === employee && row['unit kerja'] === unit && row['status 3 (kasubag tu)'] === '', { 
-        'status 3 (kasubag tu)': 'Ditolak'
-      });
-      sheetAddNote(leaveTable, `R${id}`, `${reason}|${payload.name}|${Date.now()}`)
-      return { status: true};
-    }
+    // Update status to rejected
+    sheetUpdate(TABLES.LEAVES, 
+      (row) => row.id === id && 
+               row[COLUMNS.LEAVE.NAMA] === employee && 
+               row[COLUMNS.LEAVE.UNIT] === unit && 
+               row[stage.column] === STATUS.EMPTY,
+      { [stage.column]: STATUS.DITOLAK }
+    );
 
-    if (payload.role === 4 && status === 'pending-3') {
-      sheetUpdate(leaveTable, (row) => row.id === id && row.nama === employee && row['unit kerja'] === unit && row['status 4 (kepala puskesmas)'] === '', { 
-        'status 4 (kepala puskesmas)': 'Ditolak'
-      });
-      sheetAddNote(leaveTable, `S${id}`, `${reason}|${payload.name}|${Date.now()}`)
-      return { status: true};
-    }
+    // Add rejection note with reason
+    sheetAddNote(TABLES.LEAVES, `${stage.noteCol}${id}`, `${reason}|${payload.name}|${Date.now()}`);
 
-    return { status: false, message: 'Data tidak valid'};
-    
+    return Response.success(null, 'Berhasil reject');
+
   } catch (e) {
-    Logger.log('Error in approveLeave: ' + e.toString());
-    return {
-      status: false,
-      data: null,
-      message: e.toString()
-    };
+    Logger.log('Error in rejectLeave: ' + e.toString());
+    return Response.error(e.toString());
   }
 }

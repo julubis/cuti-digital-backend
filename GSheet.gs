@@ -45,8 +45,8 @@ function invalidateSheetCache(tableName) {
 
 function writeChunkedCache_(cache, key, str) {
   const chunks = [];
-  for (let i = 0; i < str.length; i += SHEET_CACHE_CHUNK_SIZE) {
-    chunks.push(str.substring(i, i + SHEET_CACHE_CHUNK_SIZE));
+  for (let i = 0; i < str.length; i += CONFIG.CACHE_CHUNK_SIZE) {
+    chunks.push(str.substring(i, i + CONFIG.CACHE_CHUNK_SIZE));
   }
 
   const payload = {};
@@ -55,7 +55,7 @@ function writeChunkedCache_(cache, key, str) {
     payload[key + '_' + idx] = chunk;
   });
 
-  cache.putAll(payload, SHEET_CACHE_TTL_SECONDS);
+  cache.putAll(payload, CONFIG.CACHE_TTL_SECONDS);
 }
 
 function readChunkedCache_(cache, key) {

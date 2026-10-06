@@ -6,7 +6,7 @@ function hashPassword(password) {
 
     const digest = Utilities.computeDigest(
       Utilities.DigestAlgorithm.SHA_256,
-      password + PWD_SALT
+      password + SECRETS.PWD_SALT
     );
 
     const hexString = digest.map(function(byte) {
@@ -48,7 +48,7 @@ function verifyJWT(token) {
 
     // 1. Verifikasi Signature (timing-safe comparison)
     const toSign = encodedHeader + '.' + encodedPayload;
-    const expectedSignatureBytes = Utilities.computeHmacSha256Signature(toSign, JWT_SECRET);
+    const expectedSignatureBytes = Utilities.computeHmacSha256Signature(toSign, SECRETS.JWT_SECRET);
     const expectedSignature = Utilities.base64EncodeWebSafe(expectedSignatureBytes).replace(/=+$/, '');
 
     // Timing-safe comparison
@@ -113,7 +113,7 @@ function createJWT(payload) {
 
     // 3. Buat Signature
     const toSign = encodedHeader + '.' + encodedPayload;
-    const signatureBytes = Utilities.computeHmacSha256Signature(toSign, JWT_SECRET);
+    const signatureBytes = Utilities.computeHmacSha256Signature(toSign, SECRETS.JWT_SECRET);
     const encodedSignature = Utilities.base64EncodeWebSafe(signatureBytes).replace(/=+$/, '');
 
     // 4. Gabungkan menjadi format JWT
@@ -427,7 +427,7 @@ function groupForChart(data, period) {
 }
 
 function sendWhatsApp(phone, message) {
-  if (!FONNTE_API_KEY) {
+  if (!SECRETS.FONNTE_API_KEY) {
     Logger.log('FONNTE_API_KEY not configured');
     return;
   }
@@ -439,7 +439,7 @@ function sendWhatsApp(phone, message) {
       delay: 2,
     },
     headers: {
-      Authorization: FONNTE_API_KEY
+      Authorization: SECRETS.FONNTE_API_KEY
     }
   });
   console.log(response.getContentText())
@@ -517,19 +517,16 @@ function dapatkanTanggalPenuhUnit(unitTarget, limit) {
     day: '2-digit'
   });
 
-  const rows = sheetRead(leaveTable, row => 
-    row.nama && 
-    row['unit kerja'] === unitTarget &&
-    row['status 1 (atasan langsung)'] !== 'Ditolak' &&
-    row['status 2 (kepegawaian)']!== 'Ditolak' &&
-    row['status 3 (kasubag tu)'] !== 'Ditolak' &&
-    row['status 4 (kepala puskesmas)'] !== 'Ditolak'
+  const rows = sheetRead(TABLES.LEAVES, row => 
+    row[COLUMNS.LEAVE.NAMA] && 
+    row[COLUMNS.LEAVE.UNIT] === unitTarget &&
+    LeaveModel.isValidLeave(row)
   );
 
   rows.forEach(row => {
     // Pastikan objek Date diinisialisasi dengan benar
-    let tglSekarang = new Date(row['tanggal mulai cuti']);
-    const tglAkhir = new Date(row['tanggal selesai cuti']);
+    let tglSekarang = new Date(row[COLUMNS.LEAVE.TGL_MULAI]);
+    const tglAkhir = new Date(row[COLUMNS.LEAVE.TGL_SELESAI]);
 
     // Normalisasi ke jam 00:00:00 agar perbandingan tanggal presisi
     tglSekarang.setHours(0, 0, 0, 0);
